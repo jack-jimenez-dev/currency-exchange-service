@@ -1,0 +1,39 @@
+### Convertir moneda
+POST http://localhost:8080/api/v1/currency-exchange/convert
+Content-Type: application/json
+
+{
+  "amount": 100,
+  "sourceCurrency": "USD",
+  "targetCurrency": "EUR"
+}
+
+### Convertir moneda (otro ejemplo)
+POST http://localhost:8080/api/v1/currency-exchange/convert
+Content-Type: application/json
+
+{
+  "amount": 200,
+  "sourceCurrency": "EUR",
+  "targetCurrency": "USD"
+}
+
+### Ejemplo con moneda inválida (error)
+POST http://localhost:8080/api/v1/currency-exchange/convert
+Content-Type: application/json
+
+{
+  "amount": 100,
+  "sourceCurrency": "XYZ",
+  "targetCurrency": "EUR"
+}
+
+### Ejemplo con monto negativo (error de validación)
+POST http://localhost:8080/api/v1/currency-exchange/convert
+Content-Type: application/json
+
+{
+  "amount": -100,
+  "sourceCurrency": "USD",
+  "targetCurrency": "EUR"
+}
