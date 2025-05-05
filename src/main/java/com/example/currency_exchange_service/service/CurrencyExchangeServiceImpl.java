@@ -1,15 +1,20 @@
 package com.example.currency_exchange_service.service;
 
+import com.example.currency_exchange_service.dto.ConversionHistoryResponse;
 import com.example.currency_exchange_service.dto.CurrencyExchangeRequest;
 import com.example.currency_exchange_service.dto.CurrencyExchangeResponse;
+import com.example.currency_exchange_service.dto.ExchangeRateResponse;
 import com.example.currency_exchange_service.exception.CurrencyNotFoundException;
 import com.example.currency_exchange_service.exception.ExchangeRateNotFoundException;
+import com.example.currency_exchange_service.model.ConversionHistory;
 import com.example.currency_exchange_service.model.ExchangeRate;
+import com.example.currency_exchange_service.repository.ConversionHistoryRepository;
 import com.example.currency_exchange_service.repository.CurrencyRepository;
 import com.example.currency_exchange_service.repository.ExchangeRateRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.math.BigDecimal;
@@ -31,6 +36,7 @@ public class CurrencyExchangeServiceImpl implements CurrencyExchangeService {
 
     private final CurrencyRepository currencyRepository;
     private final ExchangeRateRepository exchangeRateRepository;
+    private final ConversionHistoryRepository conversionHistoryRepository;
 
     // Caché manual usando ConcurrentHashMap
     private final Map<String, CachedResponse> cache = new ConcurrentHashMap<>();
@@ -76,10 +82,23 @@ public class CurrencyExchangeServiceImpl implements CurrencyExchangeService {
         return validateCurrencies(request.getSourceCurrency(), request.getTargetCurrency())
                 .then(getExchangeRate(request.getSourceCurrency(), request.getTargetCurrency()))
                 .map(exchangeRate -> calculateConversion(request.getAmount(), exchangeRate, request))
-                .doOnNext(response -> {
+                .flatMap(response -> {
                     // Guardar en caché
                     cache.put(cacheKey, new CachedResponse(response));
                     log.info("Guardando respuesta en caché para: {}", cacheKey);
+
+                    // Guardar en el historial de conversiones
+                    ConversionHistory history = ConversionHistory.builder()
+                            .sourceCurrencyCode(request.getSourceCurrency())
+                            .targetCurrencyCode(request.getTargetCurrency())
+                            .originalAmount(request.getAmount())
+                            .convertedAmount(response.getConvertedAmount())
+                            .exchangeRate(response.getExchangeRate())
+                            .conversionDate(LocalDateTime.now())
+                            .build();
+
+                    return conversionHistoryRepository.save(history)
+                            .thenReturn(response);
                 });
     }
 
@@ -129,5 +148,91 @@ public class CurrencyExchangeServiceImpl implements CurrencyExchangeService {
                 .targetCurrency(request.getTargetCurrency())
                 .exchangeRate(exchangeRate.getRate())
                 .build();
+    }
+
+    /**
+     * Obtiene información detallada sobre la tasa de cambio entre dos monedas.
+     *
+     * @param sourceCurrency Código de moneda origen
+     * @param targetCurrency Código de moneda destino
+     * @return Respuesta con información de la tasa de cambio
+     */
+    @Override
+    public Mono<ExchangeRateResponse> getExchangeRateInfo(String sourceCurrency, String targetCurrency) {
+        log.info("Obteniendo información de tasa de cambio de {} a {}", sourceCurrency, targetCurrency);
+
+        return validateCurrencies(sourceCurrency, targetCurrency)
+                .then(exchangeRateRepository.findBySourceCurrencyCodeAndTargetCurrencyCode(sourceCurrency, targetCurrency))
+                .switchIfEmpty(Mono.error(new ExchangeRateNotFoundException(
+                        "Tasa de cambio no encontrada para " + sourceCurrency + " a " + targetCurrency)))
+                .map(exchangeRate -> ExchangeRateResponse.builder()
+                        .sourceCurrency(exchangeRate.getSourceCurrencyCode())
+                        .targetCurrency(exchangeRate.getTargetCurrencyCode())
+                        .rate(exchangeRate.getRate())
+                        .buyRate(exchangeRate.getBuyRate() != null ? exchangeRate.getBuyRate() : exchangeRate.getRate())
+                        .sellRate(exchangeRate.getSellRate() != null ? exchangeRate.getSellRate() : exchangeRate.getRate())
+                        .lastUpdated(exchangeRate.getLastUpdated())
+                        .build());
+    }
+
+    /**
+     * Obtiene el historial de conversiones realizadas con filtros opcionales.
+     *
+     * @param sourceCurrency Filtro opcional por moneda origen
+     * @param targetCurrency Filtro opcional por moneda destino
+     * @param startDate Filtro opcional por fecha de inicio
+     * @param endDate Filtro opcional por fecha de fin
+     * @return Flujo de conversiones que cumplen con los filtros
+     */
+    @Override
+    public Flux<ConversionHistoryResponse> getConversionHistory(
+            String sourceCurrency,
+            String targetCurrency,
+            LocalDateTime startDate,
+            LocalDateTime endDate) {
+
+        log.info("Consultando historial de conversiones con filtros: sourceCurrency={}, targetCurrency={}, startDate={}, endDate={}",
+                sourceCurrency, targetCurrency, startDate, endDate);
+
+        Flux<ConversionHistory> historyFlux;
+
+        // Aplicar filtros según los parámetros proporcionados
+        if (sourceCurrency != null && targetCurrency != null) {
+            // Filtrar por moneda origen y destino
+            historyFlux = conversionHistoryRepository.findAll()
+                    .filter(h -> h.getSourceCurrencyCode().equals(sourceCurrency) &&
+                                h.getTargetCurrencyCode().equals(targetCurrency));
+        } else if (sourceCurrency != null) {
+            // Filtrar solo por moneda origen
+            historyFlux = conversionHistoryRepository.findBySourceCurrencyCode(sourceCurrency);
+        } else if (targetCurrency != null) {
+            // Filtrar solo por moneda destino
+            historyFlux = conversionHistoryRepository.findByTargetCurrencyCode(targetCurrency);
+        } else {
+            // Sin filtro de moneda
+            historyFlux = conversionHistoryRepository.findAll();
+        }
+
+        // Aplicar filtros de fecha si se proporcionan
+        if (startDate != null && endDate != null) {
+            historyFlux = historyFlux.filter(h ->
+                    !h.getConversionDate().isBefore(startDate) &&
+                    !h.getConversionDate().isAfter(endDate));
+        } else if (startDate != null) {
+            historyFlux = historyFlux.filter(h -> !h.getConversionDate().isBefore(startDate));
+        } else if (endDate != null) {
+            historyFlux = historyFlux.filter(h -> !h.getConversionDate().isAfter(endDate));
+        }
+
+        // Convertir entidades a DTOs
+        return historyFlux.map(history -> ConversionHistoryResponse.builder()
+                .id(history.getId())
+                .sourceCurrency(history.getSourceCurrencyCode())
+                .targetCurrency(history.getTargetCurrencyCode())
+                .originalAmount(history.getOriginalAmount())
+                .convertedAmount(history.getConvertedAmount())
+                .exchangeRate(history.getExchangeRate())
+                .conversionDate(history.getConversionDate())
+                .build());
     }
 }
