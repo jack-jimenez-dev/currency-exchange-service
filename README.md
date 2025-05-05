@@ -173,6 +173,6 @@ src
 
 1. Implementar autenticación y autorización.
 2. Agregar más monedas y tasas de cambio.
-3. Implementar actualización automática de tasas de cambio desde APIs externas.
+3. Implementar actualización automática de tasas de cambio desde APIs externas.//
 4. Mejorar la cobertura de pruebas.
 5. Implementar métricas y monitoreo.
